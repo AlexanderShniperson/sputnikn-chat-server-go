@@ -4,9 +4,10 @@ import (
 	"context"
 	"log"
 
+	"chatserver/utils"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -36,18 +37,12 @@ func (e *AuthInterceptor) authorize(ctx context.Context, method string) error {
 		return nil
 	}
 
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return status.Errorf(codes.Unauthenticated, "metadata is not provided")
+	accessToken, err := utils.GetAccessTokenFromContext(ctx)
+	if err != nil {
+		return status.Errorf(codes.Unauthenticated, err.Error())
 	}
 
-	values := md["authorization"]
-	if len(values) == 0 {
-		return status.Errorf(codes.Unauthenticated, "authorization token is not provided")
-	}
-
-	accessToken := values[0]
-	claims, err := e.tokenManager.VerifyToken(accessToken)
+	claims, err := e.tokenManager.VerifyToken(*accessToken)
 	if err != nil {
 		return status.Errorf(codes.Unauthenticated, "access token is invalid: %v", err)
 	}

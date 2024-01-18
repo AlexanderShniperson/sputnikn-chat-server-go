@@ -2,10 +2,12 @@ package server
 
 import (
 	pb "chatserver/contract/v1"
+	"chatserver/utils"
 	"context"
 	"errors"
 	"log"
 	"sync"
+	"time"
 
 	db "chatserver/db"
 )
@@ -54,12 +56,12 @@ func (e *chatServiceImpl) AuthUser(ctx context.Context, req *pb.AuthUserRequest)
 			Avatar:   foundUser.Avatar,
 		},
 	}
-	log.Printf(">>> User=%s AuthToken=%s", req.Login, *tokenString)
+	log.Printf(">>> User=%s AuthToken=%s\n", req.Login, *tokenString)
 	return result, nil
 }
 
 func (e *chatServiceImpl) ListRooms(ctx context.Context, req *pb.ListRoomsRequest) (*pb.ListRoomsResponse, error) {
-	rooms := e.roomManager.GetRooms()
+	rooms := e.roomManager.GetRooms(req.RoomIds)
 	roomsCount := len(rooms)
 	var wg sync.WaitGroup
 	roomDetails := make([]*pb.RoomDetail, roomsCount)
@@ -88,30 +90,75 @@ func (e *chatServiceImpl) ListRooms(ctx context.Context, req *pb.ListRoomsReques
 	return resp, nil
 }
 
-func (s *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsRequest) (*pb.SyncRoomsResponse, error) {
+func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsRequest) (*pb.SyncRoomsResponse, error) {
 	return nil, errors.New("Error")
 }
 
-func (s *chatServiceImpl) ListUsers(ctx context.Context, req *pb.ListUsersRequest) (*pb.ListUsersResponse, error) {
+func (e *chatServiceImpl) ListUsers(ctx context.Context, req *pb.ListUsersRequest) (*pb.ListUsersResponse, error) {
+	users, err := e.database.UserDao.GetAllUsers()
+	if err != nil {
+		log.Println("ListUsers error:", err)
+		return nil, errors.New("internal error")
+	}
+
+	userDetails := make([]*pb.UserDetail, len(users))
+	for idx, user := range users {
+		userDetails[idx] = &pb.UserDetail{
+			UserId:   user.Id,
+			FullName: user.FullName,
+			Avatar:   user.Avatar,
+		}
+	}
+
+	result := &pb.ListUsersResponse{
+		Users: userDetails,
+	}
+
+	return result, nil
+}
+
+func (e *chatServiceImpl) SetRoomReadMarker(ctx context.Context, req *pb.RoomReadMarkerRequest) (*pb.RoomStateChangedResponse, error) {
+	foundRoom, err := e.roomManager.FindRoom(req.RoomId)
+	if err != nil {
+		return nil, errors.New("room not found")
+	}
+	accessToken, err := utils.GetAccessTokenFromContext(ctx)
+	if err != nil {
+		return nil, errors.New("internal error")
+	}
+	userClaims, err := e.tokenManager.VerifyToken(*accessToken)
+	if err != nil {
+		return nil, errors.New("internal error")
+	}
+	outChan := make(chan any)
+	foundRoom.InChan <- &MessageToRoom{
+		Message: &SetRoomReadMarker{
+			UserId:     userClaims.UserId,
+			ReadMarker: time.UnixMilli(req.ReadMarkerTimestamp),
+		},
+	}
+	msg := <-outChan
+	if reply, ok := msg.(*RoomDetailReply); ok {
+		result := &pb.RoomStateChangedResponse{
+			Detail: reply.Reply,
+		}
+		return result, nil
+	}
+	return nil, errors.New("internal error")
+}
+
+func (e *chatServiceImpl) CreateRoom(ctx context.Context, req *pb.CreateRoomRequest) (*pb.CreateRoomResponse, error) {
 	return nil, errors.New("Error")
 }
 
-func (s *chatServiceImpl) SetRoomReadMarker(ctx context.Context, req *pb.RoomReadMarkerRequest) (*pb.RoomStateChangedResponse, error) {
+func (e *chatServiceImpl) InviteRoomMember(ctx context.Context, req *pb.EmptyRequest) (*pb.RoomStateChangedResponse, error) {
 	return nil, errors.New("Error")
 }
 
-func (s *chatServiceImpl) CreateRoom(ctx context.Context, req *pb.CreateRoomRequest) (*pb.CreateRoomResponse, error) {
+func (e *chatServiceImpl) RemoveRoomMember(ctx context.Context, req *pb.EmptyRequest) (*pb.RoomStateChangedResponse, error) {
 	return nil, errors.New("Error")
 }
 
-func (s *chatServiceImpl) InviteRoomMember(ctx context.Context, req *pb.EmptyRequest) (*pb.RoomStateChangedResponse, error) {
-	return nil, errors.New("Error")
-}
-
-func (s *chatServiceImpl) RemoveRoomMember(ctx context.Context, req *pb.EmptyRequest) (*pb.RoomStateChangedResponse, error) {
-	return nil, errors.New("Error")
-}
-
-func (s *chatServiceImpl) AddRoomMessage(ctx context.Context, req *pb.RoomEventMessageRequest) (*pb.RoomEventMessageResponse, error) {
+func (e *chatServiceImpl) AddRoomMessage(ctx context.Context, req *pb.RoomEventMessageRequest) (*pb.RoomEventMessageResponse, error) {
 	return nil, errors.New("Error")
 }

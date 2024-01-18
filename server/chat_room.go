@@ -39,6 +39,12 @@ func (e *ChatRoom) Run() {
 				inMsg.OutChan <- &RoomDetailReply{
 					Reply: result,
 				}
+			case *SetRoomReadMarker:
+				// set read marker for User and return Room state
+				result := e.getRoomDetail()
+				inMsg.OutChan <- &RoomDetailReply{
+					Reply: result,
+				}
 			default:
 				inMsg.OutChan <- fmt.Sprintf("unhandled message %T", v)
 			}

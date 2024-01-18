@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"log"
 
 	db "chatserver/db"
@@ -18,12 +19,29 @@ func CreateRoomManager(database *db.SputnikDB) *RoomManager {
 	}
 }
 
-func (e *RoomManager) GetRooms() map[string]*ChatRoom {
+func (e *RoomManager) GetRooms(roomIds []string) map[string]*ChatRoom {
 	result := make(map[string]*ChatRoom)
 	for k, v := range e.rooms {
-		result[k] = v
+		if len(roomIds) == 0 {
+			result[k] = v
+		} else {
+			for _, roomId := range roomIds {
+				if k == roomId {
+					result[k] = v
+				}
+			}
+		}
 	}
 	return result
+}
+
+func (e *RoomManager) FindRoom(roomId string) (*ChatRoom, error) {
+	for k, v := range e.rooms {
+		if k == roomId {
+			return v, nil
+		}
+	}
+	return nil, errors.New("not found")
 }
 
 func (e *RoomManager) Start() {
