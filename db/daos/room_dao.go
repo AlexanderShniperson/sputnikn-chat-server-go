@@ -57,12 +57,12 @@ func (e *RoomDao) GetRooms() ([]*entities.RoomEntity, error) {
 }
 
 func (e *RoomDao) GetRoomMembers(roomId string) ([]*entities.RoomMemberEntity, error) {
-	rows, err := e.dbPool.Query(context.Background(),
-		`SELECT u.id, u.full_name, u.avatar, rm.member_status, rm.last_read_marker
+	query := `SELECT u.id, u.full_name, u.avatar, rm.member_status, rm.last_read_marker
 	FROM room_member as rm
 	INNER JOIN room as r ON r.id = rm.room_id
 	INNER JOIN "user" as u ON u.id = rm.user_id
-	WHERE r.id = $1`, roomId)
+	WHERE r.id = $1`
+	rows, err := e.dbPool.Query(context.Background(), query, roomId)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +89,7 @@ func (e *RoomDao) GetRoomMembers(roomId string) ([]*entities.RoomMemberEntity, e
 			FullName:       userFullName,
 			MemberStatus:   entities.ParseMemberStatus(memberStatus),
 			Avatar:         userAvatar,
+			IsOnline:       false,
 			LastReadMarker: lastReadMarker,
 		})
 	}
@@ -97,4 +98,16 @@ func (e *RoomDao) GetRoomMembers(roomId string) ([]*entities.RoomMemberEntity, e
 		return nil, err
 	}
 	return result, nil
+}
+
+func (e *RoomDao) SetMemberReadMarker(roomId string, userId string, readMarker time.Time) error {
+	query := `UPDATE room_member 
+	SET last_read_marker = $1
+	WHERE room_id = $2
+	AND user_id = $3`
+	_, err := e.dbPool.Exec(context.Background(), query, readMarker, roomId, userId)
+	if err != nil {
+		return err
+	}
+	return nil
 }

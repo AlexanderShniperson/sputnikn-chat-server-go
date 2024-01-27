@@ -7,5 +7,6 @@ type RoomMemberEntity struct {
 	FullName       string
 	MemberStatus   MemberStatus
 	Avatar         *string
+	IsOnline       bool
 	LastReadMarker *time.Time
 }
