@@ -1,10 +1,11 @@
 package server
 
 import (
-	"errors"
 	"log"
 
 	db "chatserver/db"
+
+	"github.com/samber/mo"
 )
 
 type RoomManager struct {
@@ -35,13 +36,12 @@ func (e *RoomManager) GetRooms(roomIds []string) map[string]*ChatRoom {
 	return result
 }
 
-func (e *RoomManager) FindRoom(roomId string) (*ChatRoom, error) {
-	for k, v := range e.rooms {
-		if k == roomId {
-			return v, nil
-		}
+func (e *RoomManager) FindRoom(roomId string) mo.Option[*ChatRoom] {
+	var result *ChatRoom
+	if room, ok := e.rooms[roomId]; ok {
+		result = room
 	}
-	return nil, errors.New("not found")
+	return mo.PointerToOption[*ChatRoom](&result)
 }
 
 func (e *RoomManager) Start() {
@@ -54,6 +54,5 @@ func (e *RoomManager) Start() {
 		createdRoom := CreateRoom(e.database, room.RoomId, room.Title, room.Avatar)
 		e.rooms[room.RoomId] = createdRoom
 		go createdRoom.Run()
-
 	}
 }

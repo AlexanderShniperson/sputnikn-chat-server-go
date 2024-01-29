@@ -10,13 +10,24 @@ type MessageToRoom struct {
 	OutChan chan any
 }
 
-type GetRoomDetail struct{}
+type GetRoomDetailInternal struct{}
 
-type RoomDetailReply struct {
+type RoomDetailReplyInternal struct {
 	Reply *pb.RoomDetail
 }
 
-type SetRoomReadMarker struct {
+type SetRoomReadMarkerInternal struct {
 	UserId     string
 	ReadMarker time.Time
+}
+
+type SyncRoomEventsInternal struct {
+	UserId string
+	Filter *pb.SyncRoomFilter
+}
+
+type SyncRoomEventsReplyInternal struct {
+	RoomId        string
+	MessageEvents []*pb.RoomEventMessageDetail
+	SystemEvents  []*pb.RoomEventSystemDetail
 }

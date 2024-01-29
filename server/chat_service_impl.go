@@ -2,6 +2,7 @@ package server
 
 import (
 	pb "chatserver/contract/v1"
+	"chatserver/db/entities"
 	"chatserver/utils"
 	"context"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	db "chatserver/db"
+
+	"github.com/samber/lo"
 )
 
 type chatServiceImpl struct {
@@ -66,23 +69,23 @@ func (e *chatServiceImpl) ListRooms(ctx context.Context, req *pb.ListRoomsReques
 	var wg sync.WaitGroup
 	roomDetails := make([]*pb.RoomDetail, roomsCount)
 	wg.Add(roomsCount)
-	idx := 0
-	for _, room := range rooms {
-		inChan := room.InChan
-		outChan := make(chan any)
-		go func(idx int) {
-			defer wg.Done()
-			inChan <- &MessageToRoom{
-				Message: &GetRoomDetail{},
-				OutChan: outChan,
-			}
-			msg := <-outChan
-			if result, ok := msg.(*RoomDetailReply); ok {
-				roomDetails[idx] = result.Reply
-			}
-		}(idx)
-		idx += 1
-	}
+	utils.MapForEach[string, *ChatRoom](
+		rooms,
+		func(k string, v *ChatRoom, index int) {
+			inChan := v.InChan
+			outChan := make(chan any)
+			go func(idx int) {
+				defer wg.Done()
+				inChan <- &MessageToRoom{
+					Message: &GetRoomDetailInternal{},
+					OutChan: outChan,
+				}
+				msg := <-outChan
+				if result, ok := msg.(*RoomDetailReplyInternal); ok {
+					roomDetails[idx] = result.Reply
+				}
+			}(index)
+		})
 	wg.Wait()
 	resp := &pb.ListRoomsResponse{
 		Detail: roomDetails,
@@ -91,7 +94,83 @@ func (e *chatServiceImpl) ListRooms(ctx context.Context, req *pb.ListRoomsReques
 }
 
 func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsRequest) (*pb.SyncRoomsResponse, error) {
-	return nil, errors.New("Error")
+	// check User has right membership in ChatRoom
+
+	accessToken, err := utils.GetAccessTokenFromContext(ctx)
+	if err != nil {
+		return nil, errors.New("internal error")
+	}
+
+	userClaims, err := e.tokenManager.VerifyToken(*accessToken)
+	if err != nil {
+		return nil, errors.New("internal error")
+	}
+
+	roomsByUser, err := e.database.RoomDao.GetRoomsByUserId(userClaims.UserId)
+	if err != nil {
+		return nil, errors.New("internal error")
+	}
+
+	syncRoomIds := make([]string, 0)
+
+	if len(req.RoomFilter) > 0 {
+		for _, roomFilter := range req.RoomFilter {
+			if room, ok := roomsByUser[roomFilter.RoomId]; ok {
+				syncRoomIds = append(syncRoomIds, room.RoomId)
+			}
+		}
+	}
+
+	if len(syncRoomIds) == 0 {
+		for roomId := range roomsByUser {
+			syncRoomIds = append(syncRoomIds, roomId)
+		}
+	}
+
+	result := &pb.SyncRoomsResponse{}
+
+	if len(syncRoomIds) > 0 {
+		var wg sync.WaitGroup
+		wg.Add(len(syncRoomIds))
+		lo.ForEach[string](
+			syncRoomIds,
+			func(roomId string, idx int) {
+				if foundRoom, ok := e.roomManager.FindRoom(roomId).Get(); ok {
+					inChan := foundRoom.InChan
+					outChan := make(chan any)
+					go func(roomId string, idx int) {
+						defer wg.Done()
+						filter := lo.FindOrElse[*pb.SyncRoomFilter](
+							req.RoomFilter,
+							&pb.SyncRoomFilter{
+								RoomId:      roomId,
+								SinceFilter: nil,
+								EventFilter: pb.RoomEventType_roomEventTypeAll,
+							},
+							func(it *pb.SyncRoomFilter) bool {
+								return it.RoomId == roomId
+							})
+						inChan <- &MessageToRoom{
+							Message: &SyncRoomEventsInternal{
+								UserId: userClaims.UserId,
+								Filter: filter,
+							},
+							OutChan: outChan,
+						}
+						msg := <-outChan
+						if inMsg, ok := msg.(*SyncRoomEventsReplyInternal); ok {
+							result.MessageEvents = append(result.MessageEvents, inMsg.MessageEvents...)
+							result.SystemEvents = append(result.SystemEvents, inMsg.SystemEvents...)
+						}
+					}(roomId, idx)
+				} else {
+					wg.Done()
+				}
+			})
+		wg.Wait()
+	}
+
+	return result, nil
 }
 
 func (e *chatServiceImpl) ListUsers(ctx context.Context, req *pb.ListUsersRequest) (*pb.ListUsersResponse, error) {
@@ -101,14 +180,15 @@ func (e *chatServiceImpl) ListUsers(ctx context.Context, req *pb.ListUsersReques
 		return nil, errors.New("internal error")
 	}
 
-	userDetails := make([]*pb.UserDetail, len(users))
-	for idx, user := range users {
-		userDetails[idx] = &pb.UserDetail{
-			UserId:   user.Id,
-			FullName: user.FullName,
-			Avatar:   user.Avatar,
-		}
-	}
+	userDetails := lo.Map[*entities.UserEntity, *pb.UserDetail](
+		users,
+		func(item *entities.UserEntity, idx int) *pb.UserDetail {
+			return &pb.UserDetail{
+				UserId:   item.Id,
+				FullName: item.FullName,
+				Avatar:   item.Avatar,
+			}
+		})
 
 	result := &pb.ListUsersResponse{
 		Users: userDetails,
@@ -118,8 +198,8 @@ func (e *chatServiceImpl) ListUsers(ctx context.Context, req *pb.ListUsersReques
 }
 
 func (e *chatServiceImpl) SetRoomReadMarker(ctx context.Context, req *pb.RoomReadMarkerRequest) (*pb.RoomStateChangedResponse, error) {
-	foundRoom, err := e.roomManager.FindRoom(req.RoomId)
-	if err != nil {
+	foundRoom, ok := e.roomManager.FindRoom(req.RoomId).Get()
+	if !ok {
 		return nil, errors.New("room not found")
 	}
 	accessToken, err := utils.GetAccessTokenFromContext(ctx)
@@ -132,13 +212,13 @@ func (e *chatServiceImpl) SetRoomReadMarker(ctx context.Context, req *pb.RoomRea
 	}
 	outChan := make(chan any)
 	foundRoom.InChan <- &MessageToRoom{
-		Message: &SetRoomReadMarker{
+		Message: &SetRoomReadMarkerInternal{
 			UserId:     userClaims.UserId,
 			ReadMarker: time.UnixMilli(req.ReadMarkerTimestamp),
 		},
 	}
 	msg := <-outChan
-	if reply, ok := msg.(*RoomDetailReply); ok {
+	if reply, ok := msg.(*RoomDetailReplyInternal); ok {
 		result := &pb.RoomStateChangedResponse{
 			Detail: reply.Reply,
 		}

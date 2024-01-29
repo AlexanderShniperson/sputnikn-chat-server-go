@@ -3,17 +3,26 @@ package daos
 import (
 	utils "chatserver/utils"
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/samber/lo"
 
 	entities "chatserver/db/entities"
+
+	pb "chatserver/contract/v1"
 
 	pgxuuid "github.com/jackc/pgx-gofrs-uuid"
 )
 
 type RoomDao struct {
 	dbPool *pgxpool.Pool
+}
+
+var messageCondition = []string{
+	pb.RoomEventType_roomEventTypeMessage.String(),
+	pb.RoomEventType_roomEventTypeAll.String(),
 }
 
 func NewRoomDao(dbPool *pgxpool.Pool) *RoomDao {
@@ -23,7 +32,8 @@ func NewRoomDao(dbPool *pgxpool.Pool) *RoomDao {
 }
 
 func (e *RoomDao) GetRooms() ([]*entities.RoomEntity, error) {
-	rows, err := e.dbPool.Query(context.Background(), "SELECT id, title, avatar FROM room")
+	query := "SELECT id, title, avatar FROM room"
+	rows, err := e.dbPool.Query(context.Background(), query)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +59,45 @@ func (e *RoomDao) GetRooms() ([]*entities.RoomEntity, error) {
 			Title:  roomTitle,
 			Avatar: roomAvatar,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (e *RoomDao) GetRoomsByUserId(userId string) (map[string]*entities.RoomEntity, error) {
+	query := `SELECT id, title, avatar 
+	FROM room r
+	INNER JOIN room_member rm ON rm.room_id = r.id
+	INNER JOIN "user" u ON rm.user_id = u.id
+	WHERE u.id = $1`
+	rows, err := e.dbPool.Query(context.Background(), query, userId)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]*entities.RoomEntity, 0)
+
+	for rows.Next() {
+		var roomUuid pgxuuid.UUID
+		var roomTitle string
+		var roomAvatar *string
+		err = rows.Scan(&roomUuid, &roomTitle, &roomAvatar)
+		if err != nil {
+			return nil, err
+		}
+
+		roomUuidStr, err := utils.UuidToString(roomUuid)
+		if err != nil {
+			return nil, err
+		}
+		result[*roomUuidStr] = &entities.RoomEntity{
+			RoomId: *roomUuidStr,
+			Title:  roomTitle,
+			Avatar: roomAvatar,
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -110,4 +159,39 @@ func (e *RoomDao) SetMemberReadMarker(roomId string, userId string, readMarker t
 		return err
 	}
 	return nil
+}
+
+func (e *RoomDao) GetSyncEvents(
+	roomId string,
+	eventType pb.RoomEventType,
+	eventLimit int,
+	sinceTime time.Time,
+	orderType pb.SinceTimeOrderType) (*entities.RoomEventsEntity, error) {
+	result := &entities.RoomEventsEntity{}
+	//
+	hasMessageCondition := lo.Contains[string](messageCondition, eventType.String())
+	var whereCondition string
+	if hasMessageCondition {
+		switch orderType {
+		case pb.SinceTimeOrderType_sinceTimeOrderTypeNewest:
+			whereCondition = "date_create > $1"
+		case pb.SinceTimeOrderType_sinceTimeOrderTypeOldest:
+			whereCondition = "date_create < $1"
+		}
+	} else {
+		whereCondition = "1=0"
+	}
+	queryMessageEventIds := fmt.Sprintf(`SELECT id, date_create
+	FROM room_event_message
+	WHERE %s
+	ORDER BY date_create
+	LIMIT $2
+	`, whereCondition)
+	rowsMessageEventIds, err := e.dbPool.Query(context.Background(), queryMessageEventIds, sinceTime, eventLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rowsMessageEventIds.Close()
+
+	return result, nil
 }

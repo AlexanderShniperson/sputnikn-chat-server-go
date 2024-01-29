@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/samber/lo"
+	"github.com/samber/mo"
 )
 
 type ChatRoomOnlineUser struct {
@@ -42,25 +45,12 @@ func (e *ChatRoom) Run() {
 		select {
 		case inMsg := <-e.InChan:
 			switch v := inMsg.Message.(type) {
-			case *GetRoomDetail:
-				result := e.buildRoomDetail()
-				inMsg.OutChan <- &RoomDetailReply{
-					Reply: result,
-				}
-			case *SetRoomReadMarker:
-				e.setMemberReadMarker(v.UserId, v.ReadMarker)
-				result := e.buildRoomDetail()
-				inMsg.OutChan <- &RoomDetailReply{
-					Reply: result,
-				}
-				e.sendBroadcastMessage(&pb.RoomEventResponse{
-					Payload: &pb.RoomEventResponse_RoomStateChanged{
-						RoomStateChanged: &pb.RoomStateChangedResponse{
-							Detail: result,
-						},
-					},
-				})
-				// send broadcast message to all users
+			case *GetRoomDetailInternal:
+				e.onGetRoomDetail(inMsg.OutChan)
+			case *SetRoomReadMarkerInternal:
+				e.onSetRoomReadMarker(inMsg.OutChan, v)
+			case *SyncRoomEventsInternal:
+				e.onSyncRoomEvents(inMsg.OutChan, v)
 			default:
 				inMsg.OutChan <- fmt.Sprintf("unhandled message %T", v)
 			}
@@ -81,24 +71,23 @@ func (e *ChatRoom) initRoomMembers() {
 }
 
 func (e *ChatRoom) buildRoomDetail() *pb.RoomDetail {
-	members := make([]*pb.RoomMemberDetail, len(e.members))
-	idx := 0
-	for _, item := range e.members {
-		var lastRead *int64
-		if item.LastReadMarker != nil {
-			dateMilli := item.LastReadMarker.UnixMilli()
-			lastRead = &dateMilli
-		}
-		members[idx] = &pb.RoomMemberDetail{
-			UserId:         item.UserId,
-			FullName:       item.FullName,
-			IsOnline:       item.IsOnline,
-			MemberStatus:   pb.RoomMemberStatusType(item.MemberStatus),
-			Avatar:         item.Avatar,
-			LastReadMarker: lastRead,
-		}
-		idx++
-	}
+	members := lo.MapToSlice[string, *entities.RoomMemberEntity, *pb.RoomMemberDetail](
+		e.members,
+		func(key string, value *entities.RoomMemberEntity) *pb.RoomMemberDetail {
+			var lastRead *int64
+			if value.LastReadMarker != nil {
+				dateMilli := value.LastReadMarker.UnixMilli()
+				lastRead = &dateMilli
+			}
+			return &pb.RoomMemberDetail{
+				UserId:         value.UserId,
+				FullName:       value.FullName,
+				IsOnline:       value.IsOnline,
+				MemberStatus:   pb.RoomMemberStatusType(value.MemberStatus),
+				Avatar:         value.Avatar,
+				LastReadMarker: lastRead,
+			}
+		})
 	return &pb.RoomDetail{
 		RoomId:                  e.Id,
 		Title:                   e.title,
@@ -121,6 +110,107 @@ func (e *ChatRoom) setMemberReadMarker(userId string, readMarker time.Time) erro
 	}
 
 	return errors.New("user not found")
+}
+
+func (e *ChatRoom) onGetRoomDetail(outChan chan any) {
+	result := e.buildRoomDetail()
+	outChan <- &RoomDetailReplyInternal{
+		Reply: result,
+	}
+}
+
+func (e *ChatRoom) onSetRoomReadMarker(outChan chan any, req *SetRoomReadMarkerInternal) {
+	e.setMemberReadMarker(req.UserId, req.ReadMarker)
+	result := e.buildRoomDetail()
+	outChan <- &RoomDetailReplyInternal{
+		Reply: result,
+	}
+	e.sendBroadcastMessage(&pb.RoomEventResponse{
+		Payload: &pb.RoomEventResponse_RoomStateChanged{
+			RoomStateChanged: &pb.RoomStateChangedResponse{
+				Detail: result,
+			},
+		},
+	})
+}
+
+func (e *ChatRoom) onSyncRoomEvents(outChan chan any, req *SyncRoomEventsInternal) {
+	result := &SyncRoomEventsReplyInternal{
+		RoomId: e.Id,
+	}
+	if roomMember, ok := e.members[req.UserId]; ok {
+		// if User has been joined to Room then load events from db and return
+		if roomMember.MemberStatus == entities.MEMBER_STATUS_JOINED {
+			var sinceTime time.Time
+			var orderType pb.SinceTimeOrderType
+			if req.Filter.SinceFilter != nil {
+				sinceTime = time.Unix(req.Filter.SinceFilter.SinceTimestamp, 0)
+				orderType = req.Filter.SinceFilter.OrderType
+			} else {
+				sinceTime = time.Unix(0, 0)
+				orderType = pb.SinceTimeOrderType_sinceTimeOrderTypeNewest
+			}
+
+			roomEvents, err := e.database.RoomDao.GetSyncEvents(e.Id, req.Filter.EventFilter, int(req.Filter.EventLimit), sinceTime, orderType)
+
+			if err == nil {
+				defaultDate := time.Unix(0, 0)
+				result.MessageEvents = lo.Map[*entities.RoomMessageEventEntity, *pb.RoomEventMessageDetail](
+					roomEvents.MessageEvents,
+					func(messageEvent *entities.RoomMessageEventEntity, index int) *pb.RoomEventMessageDetail {
+
+						attachments := lo.FilterMap[*entities.RoomMessageEventAttachmentEntity, *pb.ChatAttachmentDetail](
+							roomEvents.AttachmentEvents,
+							func(attachEvent *entities.RoomMessageEventAttachmentEntity, index int) (*pb.ChatAttachmentDetail, bool) {
+								if attachEvent.MessageEventId == messageEvent.Id {
+									result := &pb.ChatAttachmentDetail{
+										EventId:      messageEvent.Id,
+										AttachmentId: attachEvent.Id,
+										MimeType:     attachEvent.MimeType,
+									}
+									return result, true
+								}
+								return nil, false
+							})
+
+						reactions := lo.FilterMap[*entities.RoomMessageEventReactionEntity, *pb.RoomEventReactionDetail](
+							roomEvents.ReactionEvents,
+							func(reactionEvent *entities.RoomMessageEventReactionEntity, index int) (*pb.RoomEventReactionDetail, bool) {
+								if reactionEvent.MessageEventId == messageEvent.Id {
+									result := &pb.RoomEventReactionDetail{}
+									return result, true
+								}
+								return nil, false
+							})
+
+						return &pb.RoomEventMessageDetail{
+							EventId:         messageEvent.Id,
+							RoomId:          messageEvent.RoomId,
+							SenderId:        messageEvent.UserId,
+							ClientEventId:   nil,
+							Version:         int32(messageEvent.Version),
+							Content:         messageEvent.Content,
+							Attachment:      attachments,
+							Reaction:        reactions,
+							CreateTimestamp: messageEvent.DateCreate.UnixMilli(),
+							UpdateTimestamp: (mo.EmptyableToOption[*time.Time](messageEvent.DateUpdate).OrElse(&defaultDate)).UnixMilli(),
+						}
+					})
+				result.SystemEvents = lo.Map[*entities.RoomSystemEventEntity, *pb.RoomEventSystemDetail](
+					roomEvents.SystemEvents,
+					func(systemEvent *entities.RoomSystemEventEntity, index int) *pb.RoomEventSystemDetail {
+						return &pb.RoomEventSystemDetail{
+							EventId:         systemEvent.Id,
+							RoomId:          e.Id,
+							Version:         int32(systemEvent.Version),
+							Content:         systemEvent.Content,
+							CreateTimestamp: systemEvent.DateCreate.UnixMilli(),
+						}
+					})
+			}
+		}
+	}
+	outChan <- result
 }
 
 func (e *ChatRoom) sendBroadcastMessage(message *pb.RoomEventResponse) {
