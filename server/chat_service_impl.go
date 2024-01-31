@@ -6,6 +6,7 @@ import (
 	"chatserver/utils"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -98,17 +99,17 @@ func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsReques
 
 	accessToken, err := utils.GetAccessTokenFromContext(ctx)
 	if err != nil {
-		return nil, errors.New("internal error")
+		return nil, fmt.Errorf("internal error\n%v", err)
 	}
 
 	userClaims, err := e.tokenManager.VerifyToken(*accessToken)
 	if err != nil {
-		return nil, errors.New("internal error")
+		return nil, fmt.Errorf("internal error\n%v", err)
 	}
 
 	roomsByUser, err := e.database.RoomDao.GetRoomsByUserId(userClaims.UserId)
 	if err != nil {
-		return nil, errors.New("internal error")
+		return nil, fmt.Errorf("internal error\n%v", err)
 	}
 
 	syncRoomIds := make([]string, 0)
@@ -119,9 +120,7 @@ func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsReques
 				syncRoomIds = append(syncRoomIds, room.RoomId)
 			}
 		}
-	}
-
-	if len(syncRoomIds) == 0 {
+	} else {
 		for roomId := range roomsByUser {
 			syncRoomIds = append(syncRoomIds, roomId)
 		}
@@ -138,7 +137,7 @@ func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsReques
 				if foundRoom, ok := e.roomManager.FindRoom(roomId).Get(); ok {
 					inChan := foundRoom.InChan
 					outChan := make(chan any)
-					go func(roomId string, idx int) {
+					go func(roomId string, idx int, handler *pb.SyncRoomsResponse) {
 						defer wg.Done()
 						filter := lo.FindOrElse[*pb.SyncRoomFilter](
 							req.RoomFilter,
@@ -159,10 +158,10 @@ func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsReques
 						}
 						msg := <-outChan
 						if inMsg, ok := msg.(*SyncRoomEventsReplyInternal); ok {
-							result.MessageEvents = append(result.MessageEvents, inMsg.MessageEvents...)
-							result.SystemEvents = append(result.SystemEvents, inMsg.SystemEvents...)
+							handler.MessageEvents = append(handler.MessageEvents, inMsg.MessageEvents...)
+							handler.SystemEvents = append(handler.SystemEvents, inMsg.SystemEvents...)
 						}
-					}(roomId, idx)
+					}(roomId, idx, result)
 				} else {
 					wg.Done()
 				}

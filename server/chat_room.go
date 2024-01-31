@@ -139,7 +139,7 @@ func (e *ChatRoom) onSyncRoomEvents(outChan chan any, req *SyncRoomEventsInterna
 		RoomId: e.Id,
 	}
 	if roomMember, ok := e.members[req.UserId]; ok {
-		// if User has been joined to Room then load events from db and return
+		// if User has been joined to Room then load events from db and return Events
 		if roomMember.MemberStatus == entities.MEMBER_STATUS_JOINED {
 			var sinceTime time.Time
 			var orderType pb.SinceTimeOrderType
@@ -155,6 +155,7 @@ func (e *ChatRoom) onSyncRoomEvents(outChan chan any, req *SyncRoomEventsInterna
 
 			if err == nil {
 				defaultDate := time.Unix(0, 0)
+
 				result.MessageEvents = lo.Map[*entities.RoomMessageEventEntity, *pb.RoomEventMessageDetail](
 					roomEvents.MessageEvents,
 					func(messageEvent *entities.RoomMessageEventEntity, index int) *pb.RoomEventMessageDetail {
@@ -183,11 +184,13 @@ func (e *ChatRoom) onSyncRoomEvents(outChan chan any, req *SyncRoomEventsInterna
 								return nil, false
 							})
 
+						clientEventId := int32(messageEvent.ClientEventId)
+
 						return &pb.RoomEventMessageDetail{
 							EventId:         messageEvent.Id,
 							RoomId:          messageEvent.RoomId,
 							SenderId:        messageEvent.UserId,
-							ClientEventId:   nil,
+							ClientEventId:   &clientEventId,
 							Version:         int32(messageEvent.Version),
 							Content:         messageEvent.Content,
 							Attachment:      attachments,
@@ -196,6 +199,7 @@ func (e *ChatRoom) onSyncRoomEvents(outChan chan any, req *SyncRoomEventsInterna
 							UpdateTimestamp: (mo.EmptyableToOption[*time.Time](messageEvent.DateUpdate).OrElse(&defaultDate)).UnixMilli(),
 						}
 					})
+
 				result.SystemEvents = lo.Map[*entities.RoomSystemEventEntity, *pb.RoomEventSystemDetail](
 					roomEvents.SystemEvents,
 					func(systemEvent *entities.RoomSystemEventEntity, index int) *pb.RoomEventSystemDetail {
