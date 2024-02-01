@@ -79,10 +79,14 @@ func (e *ChatRoom) buildRoomDetail() *pb.RoomDetail {
 				dateMilli := value.LastReadMarker.UnixMilli()
 				lastRead = &dateMilli
 			}
+			var userOnline bool
+			if _, ok := e.onlineUsers[value.UserId]; ok {
+				userOnline = ok
+			}
 			return &pb.RoomMemberDetail{
 				UserId:         value.UserId,
 				FullName:       value.FullName,
-				IsOnline:       value.IsOnline,
+				IsOnline:       userOnline,
 				MemberStatus:   pb.RoomMemberStatusType(value.MemberStatus),
 				Avatar:         value.Avatar,
 				LastReadMarker: lastRead,

@@ -95,19 +95,12 @@ func (e *chatServiceImpl) ListRooms(ctx context.Context, req *pb.ListRoomsReques
 }
 
 func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsRequest) (*pb.SyncRoomsResponse, error) {
-	// check User has right membership in ChatRoom
-
-	accessToken, err := utils.GetAccessTokenFromContext(ctx)
+	userId, err := e.getUserIdFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("internal error\n%v", err)
 	}
 
-	userClaims, err := e.tokenManager.VerifyToken(*accessToken)
-	if err != nil {
-		return nil, fmt.Errorf("internal error\n%v", err)
-	}
-
-	roomsByUser, err := e.database.RoomDao.GetRoomsByUserId(userClaims.UserId)
+	roomsByUser, err := e.database.RoomDao.GetRoomsByUserId(*userId)
 	if err != nil {
 		return nil, fmt.Errorf("internal error\n%v", err)
 	}
@@ -128,6 +121,8 @@ func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsReques
 
 	result := &pb.SyncRoomsResponse{}
 
+	var mutex sync.Mutex
+
 	if len(syncRoomIds) > 0 {
 		var wg sync.WaitGroup
 		wg.Add(len(syncRoomIds))
@@ -137,7 +132,7 @@ func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsReques
 				if foundRoom, ok := e.roomManager.FindRoom(roomId).Get(); ok {
 					inChan := foundRoom.InChan
 					outChan := make(chan any)
-					go func(roomId string, idx int, handler *pb.SyncRoomsResponse) {
+					go func(inChannel chan *MessageToRoom, outChannel chan any, roomId string, idx int, mutex *sync.Mutex) {
 						defer wg.Done()
 						filter := lo.FindOrElse[*pb.SyncRoomFilter](
 							req.RoomFilter,
@@ -149,19 +144,23 @@ func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsReques
 							func(it *pb.SyncRoomFilter) bool {
 								return it.RoomId == roomId
 							})
-						inChan <- &MessageToRoom{
+						inChannel <- &MessageToRoom{
 							Message: &SyncRoomEventsInternal{
-								UserId: userClaims.UserId,
+								UserId: *userId,
 								Filter: filter,
 							},
-							OutChan: outChan,
+							OutChan: outChannel,
 						}
-						msg := <-outChan
+						msg := <-outChannel
 						if inMsg, ok := msg.(*SyncRoomEventsReplyInternal); ok {
-							handler.MessageEvents = append(handler.MessageEvents, inMsg.MessageEvents...)
-							handler.SystemEvents = append(handler.SystemEvents, inMsg.SystemEvents...)
+							if len(inMsg.MessageEvents) > 0 || len(inMsg.SystemEvents) > 0 {
+								mutex.Lock()
+								result.MessageEvents = append(result.MessageEvents, inMsg.MessageEvents...)
+								result.SystemEvents = append(result.SystemEvents, inMsg.SystemEvents...)
+								mutex.Unlock()
+							}
 						}
-					}(roomId, idx, result)
+					}(inChan, outChan, roomId, idx, &mutex)
 				} else {
 					wg.Done()
 				}
@@ -201,18 +200,14 @@ func (e *chatServiceImpl) SetRoomReadMarker(ctx context.Context, req *pb.RoomRea
 	if !ok {
 		return nil, errors.New("room not found")
 	}
-	accessToken, err := utils.GetAccessTokenFromContext(ctx)
+	userId, err := e.getUserIdFromContext(ctx)
 	if err != nil {
-		return nil, errors.New("internal error")
-	}
-	userClaims, err := e.tokenManager.VerifyToken(*accessToken)
-	if err != nil {
-		return nil, errors.New("internal error")
+		return nil, fmt.Errorf("internal error\n%v", err)
 	}
 	outChan := make(chan any)
 	foundRoom.InChan <- &MessageToRoom{
 		Message: &SetRoomReadMarkerInternal{
-			UserId:     userClaims.UserId,
+			UserId:     *userId,
 			ReadMarker: time.UnixMilli(req.ReadMarkerTimestamp),
 		},
 	}
@@ -240,4 +235,18 @@ func (e *chatServiceImpl) RemoveRoomMember(ctx context.Context, req *pb.EmptyReq
 
 func (e *chatServiceImpl) AddRoomMessage(ctx context.Context, req *pb.RoomEventMessageRequest) (*pb.RoomEventMessageResponse, error) {
 	return nil, errors.New("Error")
+}
+
+func (e *chatServiceImpl) getUserIdFromContext(ctx context.Context) (*string, error) {
+	accessToken, err := utils.GetAccessTokenFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	userClaims, err := e.tokenManager.VerifyToken(*accessToken)
+	if err != nil {
+		return nil, err
+	}
+
+	return &userClaims.UserId, nil
 }

@@ -144,7 +144,6 @@ func (e *RoomDao) GetRoomMembers(roomId string) ([]*entities.RoomMemberEntity, e
 			FullName:       userFullName,
 			MemberStatus:   entities.ParseMemberStatus(memberStatus),
 			Avatar:         userAvatar,
-			IsOnline:       false,
 			LastReadMarker: lastReadMarker,
 		})
 	}
