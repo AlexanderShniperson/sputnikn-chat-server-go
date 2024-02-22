@@ -5,7 +5,6 @@ import (
 	"chatserver/db/entities"
 	"chatserver/utils"
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -14,6 +13,8 @@ import (
 	db "chatserver/db"
 
 	"github.com/samber/lo"
+	codes "google.golang.org/grpc/codes"
+	status "google.golang.org/grpc/status"
 )
 
 type ChatService struct {
@@ -174,8 +175,7 @@ func (e *ChatService) SyncRooms(ctx context.Context, req *pb.SyncRoomsRequest) (
 func (e *ChatService) ListUsers(ctx context.Context, req *pb.ListUsersRequest) (*pb.ListUsersResponse, error) {
 	users, err := e.database.UserDao.GetAllUsers()
 	if err != nil {
-		log.Println("ListUsers error:", err)
-		return nil, errors.New("internal error")
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	userDetails := lo.Map[*entities.UserEntity, *pb.UserDetail](
@@ -198,11 +198,11 @@ func (e *ChatService) ListUsers(ctx context.Context, req *pb.ListUsersRequest) (
 func (e *ChatService) SetRoomReadMarker(ctx context.Context, req *pb.RoomReadMarkerRequest) (*pb.RoomStateChangedResponse, error) {
 	foundRoom, ok := e.roomManager.FindRoom(req.RoomId).Get()
 	if !ok {
-		return nil, errors.New("room not found")
+		return nil, status.Error(codes.NotFound, "room not found")
 	}
 	userId, err := e.getUserIdFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("internal error\n%v", err)
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 	outChan := make(chan any)
 	foundRoom.InChan <- &MessageToRoom{
@@ -218,23 +218,23 @@ func (e *ChatService) SetRoomReadMarker(ctx context.Context, req *pb.RoomReadMar
 		}
 		return result, nil
 	}
-	return nil, errors.New("internal error")
+	return nil, status.Error(codes.Internal, "can't set read marker")
 }
 
 func (e *ChatService) CreateRoom(ctx context.Context, req *pb.CreateRoomRequest) (*pb.CreateRoomResponse, error) {
 	userId, err := e.getUserIdFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("internal error\n%v", err)
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	memberIds := lo.Uniq(req.MemberIds)
 	if len(memberIds) < 2 {
-		return nil, errors.New("can't create room because min unique users 2")
+		return nil, status.Error(codes.Internal, "can't create room because min unique users 2")
 	}
 
 	newRoom, err := e.database.RoomDao.AddRoom(req.Title, req.Avatar, *userId, memberIds)
 	if err != nil {
-		return nil, errors.New("internal error")
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	err = e.roomManager.StartRoom(newRoom.Room)
@@ -271,15 +271,15 @@ func (e *ChatService) CreateRoom(ctx context.Context, req *pb.CreateRoomRequest)
 }
 
 func (e *ChatService) InviteRoomMember(ctx context.Context, req *pb.EmptyRequest) (*pb.RoomStateChangedResponse, error) {
-	return nil, errors.New("Error")
+	return nil, status.Error(codes.NotFound, "method not implemented")
 }
 
 func (e *ChatService) RemoveRoomMember(ctx context.Context, req *pb.EmptyRequest) (*pb.RoomStateChangedResponse, error) {
-	return nil, errors.New("Error")
+	return nil, status.Error(codes.NotFound, "method not implemented")
 }
 
 func (e *ChatService) AddRoomMessage(ctx context.Context, req *pb.RoomEventMessageRequest) (*pb.RoomEventMessageResponse, error) {
-	return nil, errors.New("Error")
+	return nil, status.Error(codes.NotFound, "method not implemented")
 }
 
 func (e *ChatService) getUserIdFromContext(ctx context.Context) (*string, error) {
