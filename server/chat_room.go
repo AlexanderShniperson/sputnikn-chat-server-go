@@ -28,7 +28,7 @@ type ChatRoom struct {
 	onlineUsers map[string]*ChatRoomOnlineUser
 }
 
-func CreateRoom(database *db.SputnikDB, roomId string, roomTitle string, roomAvatar *string) *ChatRoom {
+func NewRoom(database *db.SputnikDB, roomId string, roomTitle string, roomAvatar *string) *ChatRoom {
 	return &ChatRoom{
 		database: database,
 		Id:       roomId,
@@ -74,11 +74,6 @@ func (e *ChatRoom) buildRoomDetail() *pb.RoomDetail {
 	members := lo.MapToSlice[string, *entities.RoomMemberEntity, *pb.RoomMemberDetail](
 		e.members,
 		func(key string, value *entities.RoomMemberEntity) *pb.RoomMemberDetail {
-			var lastRead *int64
-			if value.LastReadMarker != nil {
-				dateMilli := value.LastReadMarker.UnixMilli()
-				lastRead = &dateMilli
-			}
 			var userOnline bool
 			if _, ok := e.onlineUsers[value.UserId]; ok {
 				userOnline = ok
@@ -89,7 +84,7 @@ func (e *ChatRoom) buildRoomDetail() *pb.RoomDetail {
 				IsOnline:       userOnline,
 				MemberStatus:   pb.RoomMemberStatusType(value.MemberStatus),
 				Avatar:         value.Avatar,
-				LastReadMarker: lastRead,
+				LastReadMarker: value.LastReadMarker.UnixMilli(),
 			}
 		})
 	return &pb.RoomDetail{
@@ -109,7 +104,7 @@ func (e *ChatRoom) setMemberReadMarker(userId string, readMarker time.Time) erro
 	}
 
 	if user, ok := e.members[userId]; ok {
-		user.LastReadMarker = &readMarker
+		user.LastReadMarker = readMarker
 		return nil
 	}
 

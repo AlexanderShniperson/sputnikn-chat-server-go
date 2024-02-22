@@ -16,22 +16,22 @@ import (
 	"github.com/samber/lo"
 )
 
-type chatServiceImpl struct {
+type ChatService struct {
 	pb.UnimplementedChatServiceServer
 	tokenManager *JWTManager
 	database     *db.SputnikDB
 	roomManager  *RoomManager
 }
 
-func CreateNewChatService(database *db.SputnikDB, tokenManager *JWTManager, roomManager *RoomManager) *chatServiceImpl {
-	return &chatServiceImpl{
+func NewChatService(database *db.SputnikDB, tokenManager *JWTManager, roomManager *RoomManager) *ChatService {
+	return &ChatService{
 		database:     database,
 		tokenManager: tokenManager,
 		roomManager:  roomManager,
 	}
 }
 
-func (e *chatServiceImpl) AuthUser(ctx context.Context, req *pb.AuthUserRequest) (*pb.AuthUserResponse, error) {
+func (e *ChatService) AuthUser(ctx context.Context, req *pb.AuthUserRequest) (*pb.AuthUserResponse, error) {
 	foundUser, err := e.database.UserDao.FindUserByLoginPassword(req.Login, req.Password)
 
 	if err != nil || foundUser == nil {
@@ -64,7 +64,7 @@ func (e *chatServiceImpl) AuthUser(ctx context.Context, req *pb.AuthUserRequest)
 	return result, nil
 }
 
-func (e *chatServiceImpl) ListRooms(ctx context.Context, req *pb.ListRoomsRequest) (*pb.ListRoomsResponse, error) {
+func (e *ChatService) ListRooms(ctx context.Context, req *pb.ListRoomsRequest) (*pb.ListRoomsResponse, error) {
 	rooms := e.roomManager.GetRooms(req.RoomIds)
 	roomsCount := len(rooms)
 	var wg sync.WaitGroup
@@ -94,7 +94,7 @@ func (e *chatServiceImpl) ListRooms(ctx context.Context, req *pb.ListRoomsReques
 	return resp, nil
 }
 
-func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsRequest) (*pb.SyncRoomsResponse, error) {
+func (e *ChatService) SyncRooms(ctx context.Context, req *pb.SyncRoomsRequest) (*pb.SyncRoomsResponse, error) {
 	userId, err := e.getUserIdFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("internal error\n%v", err)
@@ -171,7 +171,7 @@ func (e *chatServiceImpl) SyncRooms(ctx context.Context, req *pb.SyncRoomsReques
 	return result, nil
 }
 
-func (e *chatServiceImpl) ListUsers(ctx context.Context, req *pb.ListUsersRequest) (*pb.ListUsersResponse, error) {
+func (e *ChatService) ListUsers(ctx context.Context, req *pb.ListUsersRequest) (*pb.ListUsersResponse, error) {
 	users, err := e.database.UserDao.GetAllUsers()
 	if err != nil {
 		log.Println("ListUsers error:", err)
@@ -195,7 +195,7 @@ func (e *chatServiceImpl) ListUsers(ctx context.Context, req *pb.ListUsersReques
 	return result, nil
 }
 
-func (e *chatServiceImpl) SetRoomReadMarker(ctx context.Context, req *pb.RoomReadMarkerRequest) (*pb.RoomStateChangedResponse, error) {
+func (e *ChatService) SetRoomReadMarker(ctx context.Context, req *pb.RoomReadMarkerRequest) (*pb.RoomStateChangedResponse, error) {
 	foundRoom, ok := e.roomManager.FindRoom(req.RoomId).Get()
 	if !ok {
 		return nil, errors.New("room not found")
@@ -221,23 +221,68 @@ func (e *chatServiceImpl) SetRoomReadMarker(ctx context.Context, req *pb.RoomRea
 	return nil, errors.New("internal error")
 }
 
-func (e *chatServiceImpl) CreateRoom(ctx context.Context, req *pb.CreateRoomRequest) (*pb.CreateRoomResponse, error) {
+func (e *ChatService) CreateRoom(ctx context.Context, req *pb.CreateRoomRequest) (*pb.CreateRoomResponse, error) {
+	userId, err := e.getUserIdFromContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("internal error\n%v", err)
+	}
+
+	memberIds := lo.Uniq(req.MemberIds)
+	if len(memberIds) < 2 {
+		return nil, errors.New("can't create room because min unique users 2")
+	}
+
+	newRoom, err := e.database.RoomDao.AddRoom(req.Title, req.Avatar, *userId, memberIds)
+	if err != nil {
+		return nil, errors.New("internal error")
+	}
+
+	err = e.roomManager.StartRoom(newRoom.Room)
+	if err != nil {
+		return nil, err
+	}
+
+	roomMembers := lo.Map(newRoom.Members,
+		func(item *entities.RoomMemberEntity, index int) *pb.RoomMemberDetail {
+			return &pb.RoomMemberDetail{
+				UserId:         item.UserId,
+				FullName:       item.FullName,
+				IsOnline:       false,
+				MemberStatus:   pb.RoomMemberStatusType(item.MemberStatus),
+				Avatar:         item.Avatar,
+				LastReadMarker: item.LastReadMarker.UnixMilli(),
+			}
+		})
+
+	roomDetail := &pb.RoomDetail{
+		RoomId:                  newRoom.Room.RoomId,
+		Title:                   newRoom.Room.Title,
+		Avatar:                  newRoom.Room.Avatar,
+		Members:                 roomMembers,
+		EventMessageUnreadCount: 0,
+		EventSystemUnreadCount:  0,
+	}
+
+	result := &pb.CreateRoomResponse{
+		Detail: roomDetail,
+	}
+
+	return result, nil
+}
+
+func (e *ChatService) InviteRoomMember(ctx context.Context, req *pb.EmptyRequest) (*pb.RoomStateChangedResponse, error) {
 	return nil, errors.New("Error")
 }
 
-func (e *chatServiceImpl) InviteRoomMember(ctx context.Context, req *pb.EmptyRequest) (*pb.RoomStateChangedResponse, error) {
+func (e *ChatService) RemoveRoomMember(ctx context.Context, req *pb.EmptyRequest) (*pb.RoomStateChangedResponse, error) {
 	return nil, errors.New("Error")
 }
 
-func (e *chatServiceImpl) RemoveRoomMember(ctx context.Context, req *pb.EmptyRequest) (*pb.RoomStateChangedResponse, error) {
+func (e *ChatService) AddRoomMessage(ctx context.Context, req *pb.RoomEventMessageRequest) (*pb.RoomEventMessageResponse, error) {
 	return nil, errors.New("Error")
 }
 
-func (e *chatServiceImpl) AddRoomMessage(ctx context.Context, req *pb.RoomEventMessageRequest) (*pb.RoomEventMessageResponse, error) {
-	return nil, errors.New("Error")
-}
-
-func (e *chatServiceImpl) getUserIdFromContext(ctx context.Context) (*string, error) {
+func (e *ChatService) getUserIdFromContext(ctx context.Context) (*string, error) {
 	accessToken, err := utils.GetAccessTokenFromContext(ctx)
 	if err != nil {
 		return nil, err

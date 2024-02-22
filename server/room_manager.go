@@ -1,9 +1,11 @@
 package server
 
 import (
+	"fmt"
 	"log"
 
 	db "chatserver/db"
+	"chatserver/db/entities"
 
 	"github.com/samber/mo"
 )
@@ -13,7 +15,7 @@ type RoomManager struct {
 	rooms    map[string]*ChatRoom
 }
 
-func CreateRoomManager(database *db.SputnikDB) *RoomManager {
+func NewRoomManager(database *db.SputnikDB) *RoomManager {
 	return &RoomManager{
 		database: database,
 		rooms:    make(map[string]*ChatRoom),
@@ -44,6 +46,16 @@ func (e *RoomManager) FindRoom(roomId string) mo.Option[*ChatRoom] {
 	return mo.PointerToOption[*ChatRoom](&result)
 }
 
+func (e *RoomManager) StartRoom(room *entities.RoomEntity) error {
+	if _, roomExists := e.rooms[room.RoomId]; roomExists {
+		return fmt.Errorf("room(%v) already started", room.RoomId)
+	}
+	createdRoom := NewRoom(e.database, room.RoomId, room.Title, room.Avatar)
+	e.rooms[room.RoomId] = createdRoom
+	go createdRoom.Run()
+	return nil
+}
+
 func (e *RoomManager) Start() {
 	rooms, err := e.database.RoomDao.GetRooms()
 	if err != nil {
@@ -51,8 +63,9 @@ func (e *RoomManager) Start() {
 	}
 
 	for _, room := range rooms {
-		createdRoom := CreateRoom(e.database, room.RoomId, room.Title, room.Avatar)
-		e.rooms[room.RoomId] = createdRoom
-		go createdRoom.Run()
+		err := e.StartRoom(room)
+		if err != nil {
+			log.Println(err)
+		}
 	}
 }

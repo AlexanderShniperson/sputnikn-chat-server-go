@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS public.room_member
     user_id uuid NOT NULL,
     member_status member_status NOT NULL,
     permission smallint NOT NULL,
-    last_read_marker timestamp without time zone,
+    last_read_marker timestamp without time zone NOT NULL DEFAULT now(),
     date_create timestamp without time zone NOT NULL DEFAULT now(),
     date_update timestamp without time zone,
     PRIMARY KEY (id),

@@ -23,11 +23,11 @@ func NewUserDao(dbPool *pgxpool.Pool) *UserDao {
 }
 
 func (e *UserDao) FindUserByLoginPassword(login string, password string) (*entities.UserEntity, error) {
-	row := e.dbPool.QueryRow(context.Background(),
-		`SELECT id, login, full_name, avatar, date_create, date_update 
-		FROM "user"
-		WHERE login = $1 AND password = $2`,
-		login, password)
+	query := `SELECT id, login, full_name, avatar, date_create, date_update 
+	FROM "user"
+	WHERE login = $1 AND password = $2`
+
+	row := e.dbPool.QueryRow(context.Background(), query, login, password)
 
 	var userUuid pgxuuid.UUID
 	var userLogin string
@@ -59,9 +59,10 @@ func (e *UserDao) FindUserByLoginPassword(login string, password string) (*entit
 }
 
 func (e *UserDao) GetAllUsers() ([]*entities.UserEntity, error) {
-	rows, err := e.dbPool.Query(context.Background(),
-		`SELECT id, login, full_name, avatar, date_create, date_update
-		FROM "user"`)
+	query := `SELECT id, login, full_name, avatar, date_create, date_update
+	FROM "user"`
+
+	rows, err := e.dbPool.Query(context.Background(), query)
 
 	if err != nil {
 		return nil, err

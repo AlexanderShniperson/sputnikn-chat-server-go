@@ -31,7 +31,7 @@ func main() {
 	database := db.SetupDatabase(*dbUrl)
 	defer database.Close()
 
-	roomManager := server.CreateRoomManager(database)
+	roomManager := server.NewRoomManager(database)
 	go roomManager.Start()
 
 	// 30 days duration valid token
@@ -62,7 +62,9 @@ func main() {
 	opts = append(opts, grpc.StreamInterceptor(authInterceptor.Stream()))
 
 	grpcServer := grpc.NewServer(opts...)
-	chatService := server.CreateNewChatService(database, tokenManager, roomManager)
+	chatService := server.NewChatService(database, tokenManager, roomManager)
+	chatStreamService := server.NewChatStreamService(roomManager)
 	pb.RegisterChatServiceServer(grpcServer, chatService)
+	pb.RegisterChatStreamServiceServer(grpcServer, chatStreamService)
 	grpcServer.Serve(lis)
 }

@@ -3,9 +3,11 @@ package daos
 import (
 	utils "chatserver/utils"
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/samber/lo"
 
@@ -35,6 +37,91 @@ func NewRoomDao(dbPool *pgxpool.Pool) *RoomDao {
 	return &RoomDao{
 		dbPool: dbPool,
 	}
+}
+
+func (e *RoomDao) AddRoom(title string, avatar *string, ownerUserId string, memberIds []string) (*entities.CreateRoomEntity, error) {
+	foundMemberIds := make([]string, 0)
+
+	membersQuery := `SELECT DISTINCT id 
+	FROM "user"
+	WHERE id = ANY($1)`
+	membersRows, err := e.dbPool.Query(context.Background(), membersQuery, memberIds)
+	if err != nil {
+		return nil, err
+	}
+	defer membersRows.Close()
+
+	for membersRows.Next() {
+		var memberUuid pgxuuid.UUID
+		err = membersRows.Scan(&memberUuid)
+		memberUuidStr, err := utils.UuidToString(memberUuid)
+		if err != nil {
+			return nil, err
+		}
+		foundMemberIds = append(foundMemberIds, *memberUuidStr)
+	}
+	if err := membersRows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(foundMemberIds) < 2 {
+		return nil, errors.New("can't create room because min unique users 2")
+	}
+
+	query := `INSERT INTO room(title, avatar)
+	VALUES($1, $2)
+	RETURNING id`
+
+	row := e.dbPool.QueryRow(context.Background(), query, title, avatar)
+
+	var roomUuid pgxuuid.UUID
+	err = row.Scan(&roomUuid)
+	if err != nil {
+		return nil, err
+	}
+
+	roomUuidStr, err := utils.UuidToString(roomUuid)
+	if err != nil {
+		return nil, err
+	}
+
+	roomEntity := &entities.RoomEntity{
+		RoomId: *roomUuidStr,
+		Title:  title,
+		Avatar: avatar,
+	}
+
+	batch := &pgx.Batch{}
+	for _, memberId := range foundMemberIds {
+		var memberStatus string
+		var permission int
+		var eventSystemContent string
+		if memberId == ownerUserId {
+			memberStatus = entities.MEMBER_STATUS_JOINED.String()
+			permission = 100
+			eventSystemContent = fmt.Sprintf(`{""action"":""room_create"",""srcUserId"":""%v""}`, ownerUserId)
+		} else {
+			memberStatus = entities.MEMBER_STATUS_INVITED.String()
+			permission = 50
+			eventSystemContent = fmt.Sprintf(`{""action"":""user_invite"",""srcUserId"":""%v"",""dstUserId"":""%v""}`, ownerUserId, memberId)
+		}
+		batch.Queue("INSERT INTO room_event_system(room_id, version, content) VALUES($1, $2, $3)", roomEntity.RoomId, 1, eventSystemContent)
+		batch.Queue("INSERT INTO room_member(room_id, user_id, member_status, permission) VALUES($1, $2, $3, $4)", roomEntity.RoomId, memberId, memberStatus, permission)
+	}
+	br := e.dbPool.SendBatch(context.Background(), batch)
+	defer br.Close()
+
+	roomMembers, err := e.GetRoomMembers(roomEntity.RoomId)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &entities.CreateRoomEntity{
+		Room:    roomEntity,
+		Members: roomMembers,
+	}
+
+	return result, nil
 }
 
 func (e *RoomDao) GetRooms() ([]*entities.RoomEntity, error) {
@@ -130,7 +217,7 @@ func (e *RoomDao) GetRoomMembers(roomId string) ([]*entities.RoomMemberEntity, e
 		var userFullName string
 		var userAvatar *string
 		var memberStatus string
-		var lastReadMarker *time.Time
+		var lastReadMarker time.Time
 		err = rows.Scan(&userUuid, &userFullName, &userAvatar, &memberStatus, &lastReadMarker)
 		if err != nil {
 			return nil, err
@@ -205,6 +292,60 @@ func (e *RoomDao) GetSyncEvents(
 		ReactionEvents:   reactionEvents,
 		SystemEvents:     systemEvents,
 	}
+	return result, nil
+}
+
+func (e *RoomDao) GetRoomMemberUnreads(roomId string) ([]*entities.RoomMemberUnreadEntity, error) {
+	result := make([]*entities.RoomMemberUnreadEntity, 0)
+
+	query := `SELECT eventMsg.user_id, eventMsg.count, eventSys.count
+	FROM
+		(SELECT count(rem.id), rm.user_id
+		FROM room_member rm
+		INNER JOIN room r ON rm.room_id = r.id
+		LEFT JOIN room_event_message rem ON rem.room_id = r.id 
+			AND rem.date_create > coalesce(rm.last_read_marker, '1970-01-01')
+		WHERE
+		r.id = $1
+		GROUP BY r.id, rm.user_id) eventMsg
+	JOIN (SELECT count(res.id), rm.user_id
+		FROM room_member rm
+		INNER JOIN room r on rm.room_id = r.id
+		LEFT JOIN room_event_system res ON res.room_id = r.id 
+		AND res.date_create > coalesce(rm.last_read_marker, '1970-01-01')
+		WHERE
+		r.id = $1
+		GROUP BY r.id, rm.user_id) eventSys ON eventMsg.user_id = eventSys.user_id
+   `
+
+	rows, err := e.dbPool.Query(context.Background(), query, roomId)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var memberUuid pgxuuid.UUID
+		var eventMessageCount int
+		var eventSystemCount int
+		err = rows.Scan(&memberUuid, &eventMessageCount, &eventSystemCount)
+		if err != nil {
+			return nil, err
+		}
+		memberUuidStr, err := utils.UuidToString(memberUuid)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, &entities.RoomMemberUnreadEntity{
+			MemberId:           *memberUuidStr,
+			EventMessageUnread: eventMessageCount,
+			EventSystemUnread:  eventSystemCount,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return result, nil
 }
 
